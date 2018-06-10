@@ -81,6 +81,7 @@ class TinyTag(object):
         self.year = None
         self._load_image = False
         self._image_data = None
+        self.chapters = []
 
     def get_image(self):
         return self._image_data
@@ -369,7 +370,7 @@ class ID3(TinyTag):
         'TPE1': 'artist', 'TP1': 'artist',
         'TIT2': 'title',  'TT2': 'title',
         'TCON': 'genre',  'TPOS': 'disc',
-        'TPE2': 'albumartist',
+        'TPE2': 'albumartist', 'CHAP': 'chapter'
     }
     IMAGE_FRAME_IDS = set(['APIC', 'PIC'])
     PARSABLE_FRAME_IDS = set(FRAME_ID_TO_FIELD.keys()).union(IMAGE_FRAME_IDS)
@@ -620,7 +621,9 @@ class ID3(TinyTag):
                 return frame_size
             content = fh.read(frame_size)
             fieldname = ID3.FRAME_ID_TO_FIELD.get(frame_id)
-            if fieldname:
+            if frame_id == 'CHAP':
+                self.chapters.append(self._parse_chapter_marker(content, bits_per_byte, frame_size_bytes))
+            elif fieldname:
                 self._set_field(fieldname, content, self._decode_string)
             elif frame_id in self.IMAGE_FRAME_IDS and self._load_image:
                 # See section 4.14: http://id3.org/id3v2.4.0-frames
@@ -635,6 +638,71 @@ class ID3(TinyTag):
                 self._image_data = content[desc_end_pos:]
             return frame_size
         return 0
+
+    def _parse_time(self, time_data):
+        return (ord(time_data[3]) + ord(time_data[2]) * 256 + ord(time_data[1]) * 256 * 256 + ord(
+            time_data[0]) * 256 * 256 * 256) / 1000.0
+
+    def _parse_length(self, sync_safe_int):
+        return ord(sync_safe_int[3]) + ord(sync_safe_int[2]) * 128 + ord(sync_safe_int[1]) * 128 * 128 + ord(
+            sync_safe_int[0]) * 128 * 128 * 128
+
+    def _parse_chapter_marker(self, data, bits_per_byte, frame_size_bytes):
+        chapter = {}
+        # print('data', ":".join("{:02x}".format(ord(c)) for c in data))
+        # find element id
+        null_index = data.index(chr(0))
+
+        element_id = data[:null_index]
+        # print('elemId', element_id)
+        chapter['ctoc_id'] = element_id
+
+        data = data[null_index + 1:]
+
+        start_time = data[:4]
+        data = data[4:]
+        chapter['start_time'] = self._parse_time(start_time)
+
+        end_time = data[:4]
+        data = data[4:]
+        chapter['end_time'] = self._parse_time(end_time)
+
+        start_bytes = data[:4]
+        data = data[4:]
+        chapter['start_bytes'] = start_bytes
+
+        end_bytes = data[:4]
+        data = data[4:]
+        chapter['end_bytes'] = end_bytes
+
+        # extract frame id and skip over in data
+        frame_id = data[:4]
+        data = data[4:]
+
+        if frame_id == 'TIT2':
+            # extract frame length and skip over
+            frame_length = self._parse_length(data[:frame_size_bytes])
+            data = data[frame_size_bytes:]
+
+            # skip 2 bytes for flags
+            data = data[2:]
+
+            # extract the text encoding and the string
+            tit_2_data = data[:frame_length]
+
+            data = data[frame_length:]
+
+
+            #print('data', ":".join("{:02x}".format(ord(c)) for c in data), data)
+            chapter['title'] = self._decode_string(tit_2_data)
+
+        #print('data', ":".join("{:02x}".format(ord(c)) for c in data))
+        print('len(data)', len(data))
+        if len(data) > 0:
+            frame_id = data[:4]
+            data = data[4:]
+
+        return chapter
 
     def _decode_string(self, b):
         try:  # it's not my fault, this is the spec.
